@@ -12715,7 +12715,7 @@ textarea.form-control {
                     <div class="header-content">
                         <h1 class="text-center"><a href="https://github.com/levinster82/Bitcoin-BIP39-Electrum-Tool/releases/latest" target="_blank" style="color: inherit; text-decoration: none;">Bitcoin Mnemonic Code Converter</a></h1>
                         <div class="text-center version">
-                            <a href="https://github.com/levinster82/Bitcoin-BIP39-Electrum-Tool/releases/latest" target="_blank" style="color: inherit; text-decoration: none;">v1.0.7</a>
+                            <a href="https://github.com/levinster82/Bitcoin-BIP39-Electrum-Tool/releases/latest" target="_blank" style="color: inherit; text-decoration: none;">v1.0.8</a>
                         </div>
                     </div>
                     <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle" aria-label="Toggle dark/light theme">
@@ -27722,6 +27722,7 @@ window.Entropy = new (function() {
     var showQr = false;
     var qrLocked = false;
     var lockedQrField = null;
+    var qrFieldInfo = null; // Logical tracking of what QR is showing
     
     var entropyTypeAutoDetect = true;
     var entropyChangeTimeoutEvent = null;
@@ -28099,6 +28100,7 @@ window.Entropy = new (function() {
                 showQr = false;
                 qrLocked = false;
                 lockedQrField = null;
+                qrFieldInfo = null;
             }
         });
         DOM.showSplitMnemonic.on("change", toggleSplitMnemonic);
@@ -28304,6 +28306,9 @@ window.Entropy = new (function() {
         // Show the word indexes
         showWordIndexes();
         writeSplitPhrase(phrase);
+
+        // Update QR code if it's currently displayed
+        updateQrIfNeeded();
     }
 
     function tabChanged() {
@@ -28489,6 +28494,9 @@ window.Entropy = new (function() {
         // Calculate and display
         calcForDerivationPath();
         calcBip85();
+
+        // Update QR code if it's currently displayed
+        updateQrIfNeeded();
     }
 
     function rootKeyChanged() {
@@ -28504,6 +28512,9 @@ window.Entropy = new (function() {
         calcBip32RootKeyFromBase58(rootKeyBase58);
         calcForDerivationPath();
         calcBip85();
+
+        // Update QR code if it's currently displayed
+        updateQrIfNeeded();
     }
 
 
@@ -28881,11 +28892,16 @@ window.Entropy = new (function() {
             displayNip06Info();
         }
         displayBip32Info();
-        
+
         // Update CSV if CSV tab is currently visible - delay to ensure table is updated
         setTimeout(function() {
             updateCsvIfVisible();
         }, 500);
+
+        // Update QR after table has time to populate
+        setTimeout(function() {
+            updateQrIfNeeded();
+        }, 600);
     }
 
     function generateClicked() {
@@ -29820,6 +29836,8 @@ window.Entropy = new (function() {
                         if (isLast) {
                             hidePending();
                             updateCsv();
+                            // Update QR code if it's currently displayed
+                            updateQrIfNeeded();
                         }
                         return;
                     } else {
@@ -29831,6 +29849,8 @@ window.Entropy = new (function() {
                         if (isLast) {
                             hidePending();
                             updateCsv();
+                            // Update QR code if it's currently displayed
+                            updateQrIfNeeded();
                         }
                         return;
                     }
@@ -29991,6 +30011,11 @@ window.Entropy = new (function() {
                 if (isLast) {
                     hidePending();
                     updateCsv();
+                    // Regenerate QR if it was showing a table element
+                    if (!DOM.qrContainer.hasClass("hidden") && lockedQrField && $(lockedQrField).closest(".addresses").length > 0) {
+                        var mockEvent = { target: lockedQrField };
+                        createQr(mockEvent);
+                    }
                 }
             }, 50)
         }
@@ -30779,6 +30804,12 @@ window.Entropy = new (function() {
                     DOM.qrHider.removeClass("hidden");
                 }
                 DOM.qrContainer.removeClass("hidden");
+
+                // Update grid if it's currently visible
+                var gridCanvas = DOM.qrGridOverlay[0];
+                if (gridCanvas.style.display !== "none") {
+                    drawQrGrid();
+                }
             });
         }
     }
@@ -30786,6 +30817,83 @@ window.Entropy = new (function() {
     function destroyQr() {
         DOM.qrImage.empty();
         DOM.qrContainer.addClass("hidden");
+    }
+
+    function getQrFieldInfo(field) {
+        var $field = $(field);
+        var $row = $field.closest("tr");
+
+        // Check if it's a table row element
+        if ($row.length > 0 && $row.closest(".addresses").length > 0) {
+            var rowIndex = $row.index();
+            var cellType = "";
+
+            if ($field.closest(".address").length > 0) cellType = "address";
+            else if ($field.closest(".pubkey").length > 0) cellType = "pubkey";
+            else if ($field.closest(".privkey").length > 0) cellType = "privkey";
+            else if ($field.closest(".index").length > 0) cellType = "index";
+
+            return {
+                type: "table",
+                rowIndex: rowIndex,
+                cellType: cellType
+            };
+        }
+
+        // Check for static fields by ID or class
+        if ($field.hasClass("phrase") || $field.attr("id") === "phrase") {
+            return { type: "phrase" };
+        }
+        if ($field.hasClass("seed") || $field.attr("id") === "seed") {
+            return { type: "seed" };
+        }
+        if ($field.hasClass("root-key") || $field.attr("id") === "root-key") {
+            return { type: "root-key" };
+        }
+
+        // For other fields, try to identify by ID or class
+        var fieldId = $field.attr("id");
+        if (fieldId) {
+            return { type: "static", id: fieldId };
+        }
+
+        return { type: "unknown" };
+    }
+
+    function findFieldFromInfo(info) {
+        if (!info) return null;
+
+        if (info.type === "table") {
+            var $rows = DOM.addresses.find("tr");
+            if (info.rowIndex < $rows.length) {
+                var $row = $rows.eq(info.rowIndex);
+                var $cell = $row.find("." + info.cellType + " span");
+                if ($cell.length > 0) {
+                    return $cell[0];
+                }
+            }
+        } else if (info.type === "phrase") {
+            return DOM.phrase[0];
+        } else if (info.type === "seed") {
+            return DOM.seed[0];
+        } else if (info.type === "root-key") {
+            return DOM.rootKey[0];
+        } else if (info.type === "static" && info.id) {
+            return document.getElementById(info.id);
+        }
+
+        return null;
+    }
+
+    function updateQrIfNeeded() {
+        if (!DOM.qrContainer.hasClass("hidden") && qrFieldInfo) {
+            var newField = findFieldFromInfo(qrFieldInfo);
+            if (newField) {
+                lockedQrField = newField;
+                var mockEvent = { target: newField };
+                createQr(mockEvent);
+            }
+        }
     }
 
     function toggleQr(e) {
@@ -30796,12 +30904,14 @@ window.Entropy = new (function() {
             showQr = false;
             qrLocked = false;
             lockedQrField = null;
+            qrFieldInfo = null;
             DOM.qrHider.addClass("hidden");
         } else {
             // Clicking a different field or no field is locked - show QR for this field
             showQr = true;
             qrLocked = true;
             lockedQrField = currentField;
+            qrFieldInfo = getQrFieldInfo(currentField);
             createQr(e);
             DOM.qrHider.removeClass("hidden");
         }
